@@ -1,0 +1,32 @@
+{
+  "name": "webmcp-wallet-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.31",
+    "@assistant-ui/react": "^0.15.14",
+    "@mcp-b/global": "4.0.0",
+    "@mcp-b/react-webmcp": "4.0.0",
+    "@mcp-b/transports": "4.0.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "ai": "^7.0.66",
+    "ethers6": "npm:ethers@^6.16.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "styled-components": "^6.1.19"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  }
+}
