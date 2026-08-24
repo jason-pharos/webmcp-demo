@@ -1,156 +1,325 @@
 # WebMCP Wallet Demo
 
-## 1. 这是什么
+一个最小示例：**把 web3 页面已有的功能，通过 WebMCP 注入给页内的 AI chat widget**。
 
-一个最小化的 WebMCP 示例：宿主页面把自己已有的两个能力——**查余额**、**转账**——注册成 MCP 工具（`document.modelContext`），页内 AI agent（本 demo 内置的聊天面板，以及任何连到同一个 tab channel 的 MCP 客户端，比如 MCP-B 浏览器扩展）都可以发现并调用它们。宿主页面本身仍然保留一套普通 UI（连钱包 / 余额卡片 / 手动转账表单），工具只是把这些已有能力"复用"给 AI，而不是新写一套。
-
-## 2. 快速开始
+页面本身有一套普通 UI（连钱包 / 余额卡片 / 转账表单）。WebMCP 做的事情只是把其中两个已有能力——**查余额**、**转账**——注册成 MCP 工具，让 chat widget 里的模型可以发现并调用它们。**没有为 AI 重写一套业务逻辑**，工具 handler 直接复用页面自己在用的那几个 hook。
 
 ```bash
-cp .env.example .env
-# 编辑 .env，至少填 VITE_LLM_API_KEY（否则 chat 面板可用但会提示未配置）
+cp .env.example .env   # 至少填 VITE_LLM_API_KEY
+pnpm install && pnpm dev
 ```
 
-**这是一个独立工程**，不属于本仓 pnpm workspace（根 `pnpm-workspace.yaml` 只匹配 `apps/*`），可以把 `webmcp-demo/` 整个目录拷到仓库外单独使用。
+---
 
-- **在本仓库内部执行**（当前所在位置）：
+## 1. 依赖包：@mcp-b/* 各管什么
 
-  ```bash
-  pnpm install --ignore-workspace
-  pnpm dev
-  ```
+WebMCP 的实现来自 [MCP-B](https://github.com/MiguelsPizza/WebMCP) 的三个包，加上官方 MCP SDK。它们的分工是本 demo 最需要先搞清楚的一件事：
 
-  ⚠️ **踩坑提醒**：在本 monorepo 内部，直接跑 `pnpm install`（不加 `--ignore-workspace`）会被根目录的 `pnpm-workspace.yaml` 劫持成"根 install"——命令会正常退出（`exit 0`），日志显示 `Scope: all 3 workspace projects`，但 `webmcp-demo/` 下**什么依赖都不会装**（`node_modules` 目录都不会创建）。必须加 `--ignore-workspace`。
+| 包 | 角色 | 在本 demo 的用法 |
+|---|---|---|
+| `@mcp-b/global` | **MCP server 端**。在页面里装一个 `document.modelContext` 运行时，并按配置起一个 tab transport 的 server | `index.html` 内联脚本配置 + `src/main.tsx` 兜底调用 `initializeWebModelContext()` |
+| `@mcp-b/react-webmcp` | **React 绑定**。`useWebMCP()` 注册工具（server 侧）；`<McpClientProvider>` / `useMcpClient()` 管理客户端连接与工具列表（client 侧） | `src/mcp/useWalletWebMcpTools.ts`、`src/App.tsx`、`src/components/aiChat/ChatDrawer.tsx` |
+| `@mcp-b/transports` | **传输层**。`TabClientTransport` 走 `window.postMessage`，让同一个 tab 内的 client 连上 server | `src/mcp/mcpClient.ts` |
+| `@modelcontextprotocol/sdk` | 官方 MCP 协议实现，上面三个包的底座。这里只直接用到 `Client` | `src/mcp/mcpClient.ts` |
 
-- **把目录拷出本仓库之后**（不再处于任何 pnpm workspace 内）：
+关键认知：**server 和 client 都在同一个页面里**。页面既是"暴露能力的一方"（server），又是"消费能力的一方"（client，因为 chat widget 也在这个页面）。两者不共享内存，而是通过 postMessage 上的 MCP 协议对话——正因为如此，同 tab 的浏览器扩展（如 MCP-B extension）也能连上同一个 channel。
 
-  ```bash
-  pnpm install    # 普通 install 即可，不需要 --ignore-workspace
-  pnpm dev
-  ```
+---
 
-其他脚本：`pnpm build`（`tsc -b && vite build`）、`pnpm preview`。
+## 2. 页面 WebMCP 与 AI chat widget 怎么建立连接
 
-## 3. 配置项
+整体形状（图的画法参考 [webmachinelearning/webmcp](https://github.com/webmachinelearning/webmcp) 的 *WebMCP In-browser tool flow*，但那张图里的 agent 是**浏览器内置**的；本 demo 的 agent 是**页面自带的 chat widget**，所以 MCP server 和 client 都在同一个页面里，靠 `postMessage` 对话）：
 
-全部在 `.env.example`（复制成 `.env` 后填写），由 `src/config/env.ts` 统一读取并给出默认值：
+```mermaid
+graph TD
+    LLM["<b><i>LLM 服务商</i></b><br>任意 OpenAI 兼容端点"]
 
-| 变量 | 说明 |
-|---|---|
-| `VITE_CHAIN_ID` | 期望链的 chainId，默认 `1672`（Pharos Mainnet）|
-| `VITE_CHAIN_NAME` | 链名，用于 UI 文案与切链提示 |
-| `VITE_NATIVE_SYMBOL` | 原生代币符号，默认 `PROS` |
-| `VITE_EXPLORER_URL` | 区块浏览器根地址，用于拼交易详情链接（`txUrl(hash)`）|
-| `VITE_USDC_ADDRESS` | USDC 合约地址 |
-| `VITE_USDC_DECIMALS` | USDC 小数位数，默认 `6` |
-| `VITE_LLM_BASE_URL` | 任意 OpenAI 兼容端点的 base URL，默认 DeepSeek（`https://api.deepseek.com/v1`）|
-| `VITE_LLM_MODEL` | 模型名，默认 `deepseek-chat` |
-| `VITE_LLM_API_KEY` | LLM API key。留空时 chat adapter 会直接抛出"未配置"的错误，不会静默失败 |
+    subgraph WB["<b><i>Web browser · 同一个 tab</i></b>"]
+        subgraph RP["<b>Running Page 'index.html'</b>"]
+            CW["AI chat widget<br>ChatDrawer + assistant-ui runtime"]
+            CL["MCP client<br>mcpClient.ts · TabClientTransport"]
+            SV[("MCP server<br>document.modelContext<br>@mcp-b/global")]
+            WMCP["WebMCP 工具<br>wallet_get_balances · wallet_transfer"]
+            BIZ["页面既有能力<br>useBalances · useTransfer · useTransferConfirm"]
+        end
+        EXT["同 tab 的其它 MCP 客户端<br>如 MCP-B 浏览器扩展"]
+    end
 
-⚠️ 以上所有 `VITE_` 变量都会被打进前端产物（bundle），包括 `VITE_LLM_API_KEY`——见第 7 节。
+    CHAIN["<b><i>钱包与链</i></b><br>window.ethereum · Pharos"]
 
-## 4. 代码地图
+    CW <-->|"1. 用户 prompt 与模型回复，浏览器直连"| LLM
+    CW -->|"2. 模型发 tool call，进 AI SDK ToolSet.execute"| CL
+    CL <-->|"3. MCP over window.postMessage，channelId 两端必须一致"| SV
+    SV -->|"4. 路由到 useWebMCP 注册的 handler"| WMCP
+    WMCP -->|"5. handler 复用页面已有的 hook，不重写业务逻辑"| BIZ
+    BIZ <-->|"6. 读余额 · 弹确认框 · 请求签名"| CHAIN
+    EXT -.->|"连上同一个 channel 也能 list/call 这些工具，见第 5 节"| SV
+```
 
-**先看 `src/mcp/useWalletWebMcpTools.ts`**：这是理解本 demo 的入口，展示"宿主页面已有能力如何变成 MCP 工具"。
+搭建这条链路是四步。
 
-| 文件 | 作用 |
-|---|---|
-| `src/mcp/useWalletWebMcpTools.ts` | **核心**：把 `wallet_get_balances` / `wallet_transfer` 注册为 WebMCP 工具（`useWebMCP`），工具 handler 直接调用下面 `src/chain/*` 的既有能力 |
-| `src/mcp/mcpClient.ts` | 页内 MCP client 单例 + `TabClientTransport`；`MCP_CHANNEL_ID` 必须与 `index.html` 内联脚本里的 channelId 一致（见第 6 节陷阱①②）|
-| `src/mcp/mcpTools.ts` | 把 MCP 工具的 JSON Schema 转成 AI SDK 的 `ToolSet`（`mcpToolsToAiTools`），`execute` 失败时返回 `{ error }` 而不抛异常 |
-| `src/ai/chatModel.ts` | OpenAI 兼容协议 → assistant-ui `ChatModelAdapter`（`createChatAdapter`），system prompt、错误脱敏（`toUserFacingError`）都在这里 |
-| `src/chain/tokens.ts` | `TokenKey` / `TokenMeta` / `TOKENS`（PROS 原生代币 + USDC ERC20 描述）、最小 ERC20 ABI |
-| `src/chain/useBalances.ts` | 读取 PROS / USDC 余额（`provider.getBalance` + `Contract.balanceOf`），导出 `refresh()` |
-| `src/chain/useTransfer.ts` | 发起转账（`sendTransaction` / ERC20 `transfer`），只等 `tx.hash`，不等 receipt |
-| `src/chain/useTransferConfirm.tsx` | 转账前的人工确认弹窗控制器，`requestConfirm(req) => Promise<boolean>` |
-| `src/chain/validateTransfer.ts` | 转账前的本地校验闸门（未连接 / 链不对 / 地址非法 / 金额非法 / 超余额），手动表单与工具 handler 共用同一份逻辑 |
-| `src/wallet/WalletProvider.tsx` + `useWallet.ts` | EIP-1193 钱包接入：连接、切链、监听 `accountsChanged`/`chainChanged` |
-| `src/components/*` | 宿主页普通 UI：`ConnectButton`、`BalanceCards`、`TransferForm`、`TransferConfirmDialog`、`McpStatus`（展示 MCP 连接状态与已注册工具列表）|
-| `src/components/aiChat/*` | 聊天面板 UI：`ChatLauncher`（悬浮按钮）、`ChatDrawer`（抽屉，内部只创建一次 `createChatAdapter`）、`Thread`、`Composer`、`SamplePrompts` |
+### ① + ② server 端：channelId 必须在 import 之前设好
 
-## 5. 工具契约
+`index.html`：
 
-### 5.1 `wallet_get_balances`（只读）
+```html
+<script>
+  window.__webModelContextOptions = {
+    transport: {
+      tabServer: {
+        allowedOrigins: [location.origin],
+        channelId: 'webmcp-wallet-demo',
+      },
+    },
+  };
+</script>
+<script type="module" src="/src/main.tsx"></script>
+```
 
-无入参——**始终读当前已连接的钱包**，不接受任意地址参数（防止模型代查别人地址）。
+**为什么必须写在 `index.html` 而不能挪进 `main.tsx`**：`@mcp-b/global` 在被 import 的那一刻就会读取这个全局变量并自动初始化（模块顶层副作用），而 ESM import 先于同模块的后续代码执行——也就是说它跑在 `main.tsx` 里那句显式 `initializeWebModelContext()` 之前。而 `initializeWebModelContext` 内部是 `if (runtime) return`，谁先跑谁生效。如果不在这里提前设置，server 会被钉死在默认的 `mcp-default` 通道上。
+
+`main.tsx` 里那次调用只是兜底（换了别的 HTML 入口时才真正生效）。
+
+### ③ client 端：单例 + 同一个 channelId
+
+`src/mcp/mcpClient.ts` 导出两个单例 getter：
 
 ```ts
-// 输出
-{
-  connected: boolean;        // false 时不含下面任何字段
-  address?: string;
-  chainId?: number;
-  chainName?: string;
-  correctChain?: boolean;    // 是否在期望的链上
-  pros?: { symbol: string; balance?: string };
-  usdc?: { symbol: string; balance?: string; address: string };
-}
+export const MCP_CHANNEL_ID = 'webmcp-wallet-demo';  // ⚠️ 必须与 index.html 完全一致
+
+// 请求超时放到 10 分钟：wallet_transfer 要等用户点确认框 + 钱包签名
+const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
+getMcpClient()     // new Client({ name, version })，模块级单例
+getMcpTransport()  // new TabClientTransport({ targetOrigin, channelId, requestTimeout })
 ```
 
-`annotations: { readOnlyHint: true }`。
+**必须是模块级单例**：React 重渲染时若重建 client/transport，会反复建连断连。
 
-### 5.2 `wallet_transfer`（写，有副作用）
+`src/App.tsx` 把它们交给 provider：
+
+```tsx
+<WalletProvider>
+  <McpClientProvider client={getMcpClient()} transport={getMcpTransport()} opts={{}}>
+    <Page />
+  </McpClientProvider>
+</WalletProvider>
+```
+
+### ④ chat widget 侧：把 MCP 工具转成 AI SDK 的 ToolSet
+
+`ChatDrawer.tsx`：
+
+```tsx
+const { client, tools, isConnected } = useMcpClient();
+
+const toolSet = useMemo<ToolSet>(
+  () => (isConnected ? mcpToolsToAiTools(tools, client) : {}),
+  [tools, client, isConnected]
+);
+
+// adapter 只能创建一次，否则会重建 runtime、丢掉聊天记录
+// → 工具表不进依赖数组，用 ref 转交
+const toolSetRef = useRef(toolSet);
+useEffect(() => { toolSetRef.current = toolSet; }, [toolSet]);
+const adapter = useMemo(() => createChatAdapter(() => toolSetRef.current), []);
+const runtime = useLocalRuntime(adapter);
+```
+
+`src/mcp/mcpTools.ts` 做的转换很薄——把每个 MCP 工具的 JSON Schema 包成 AI SDK 的 tool，`execute` 里回调 `client.callTool()`：
 
 ```ts
-// 入参
-{
-  token: 'PROS' | 'USDC';   // PROS 是原生代币
-  to: string;               // 0x 地址，必须由用户在对话里明确给出
-  amount: string;           // 该 token 单位下的人类可读金额，如 "0.1"
-}
+set[t.name] = {
+  description: t.description ?? '',
+  inputSchema: jsonSchema(t.inputSchema ?? { type: 'object', properties: {} }),
+  execute: async (args) => {
+    try {
+      const res = await client.callTool({ name: t.name, arguments: args ?? {} });
+      return res.structuredContent ?? textOf(res.content) ?? {};
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };  // 不抛，避免打断整轮对话
+    }
+  },
+};
+```
 
-// 出参
-{
-  status: 'submitted' | 'declined' | 'rejected' | 'blocked' | 'failed';
-  message: string;          // 人类可读说明
-  token?: string; amount?: string; to?: string;
-  txHash?: string; explorerUrl?: string;   // 仅 submitted 时有
+之后就是普通的 AI SDK tool-calling 循环（`src/ai/chatModel.ts`，`streamText` + `stopWhen: stepCountIs(5)`）：模型发 tool call → `execute` → `client.callTool` → postMessage 回到 server → `useWebMCP` 的 handler → 结果原路回灌 → 模型继续说话。
+
+### 两个踩坑点
+
+1. **channelId 不同步** → client 永远连不上 server，只会在 `requestTimeout` 超时后收到 MCP `-32001`。改一处必须同步改另一处（`index.html` ↔ `MCP_CHANNEL_ID`）。
+2. **React 19 StrictMode 下 `Already connected to a transport`**：`<McpClientProvider>` 的 connect effect 会 mount→cleanup→mount 两次，cleanup 时它只重置自己的 ref、从不调 `client.close()`，于是第二次 mount 在同一个 client 上再 connect 一次，SDK 的 `Protocol.connect()` 同步抛错。本 demo 的解法是在 `mcpClient.ts` 里给 `client.connect` 包一层幂等（同一个 transport 的重复调用复用第一次的 promise，换 transport 或真实失败照常抛）——不改 node_modules、不关 StrictMode。
+
+不想打开 chat 也能验证连接，看 `src/components/McpStatus.tsx`：`useMcpClient()` 直接给出连接状态与工具名列表。
+
+---
+
+## 3. 两个页面功能怎么注册成工具
+
+全部在 `src/mcp/useWalletWebMcpTools.ts`——**这是理解本 demo 的入口文件**。
+
+注册用 `useWebMCP(definition, deps)`，形状类似 `useMemo`：
+
+```ts
+useWebMCP({ name, description, inputSchema, outputSchema, annotations, handler }, deps)
+```
+
+`App.tsx` 里把页面已有的状态与动作原封不动传进去，工具和手动 UI 共用同一份状态：
+
+```tsx
+function Page() {
+  const { address, chainId, isCorrectChain } = useWallet();
+  const balances = useBalances();
+  const transfer  = useTransfer();
+  const confirm   = useTransferConfirm();
+
+  useWalletWebMcpTools({
+    address, chainId, isCorrectChain,
+    prosBalance: balances.pros.balance,
+    usdcBalance: balances.usdc.balance,
+    transfer: transfer.transfer,
+    lastTransferError: transfer.lastError,
+    requestConfirm: confirm.requestConfirm,   // 同一个确认弹窗，手动表单也在用
+    refreshBalances: balances.refresh,
+  });
+  // ... 下面是普通 UI：<BalanceCards/> <TransferForm/> <TransferConfirmDialog/> <ChatLauncher/>
 }
 ```
 
-`annotations: { readOnlyHint: false, destructiveHint: true }`。五种 `status` 的含义：
+### 工具 1：`wallet_get_balances`（只读）
+
+```ts
+useWebMCP(
+  {
+    name: 'wallet_get_balances',
+    description:
+      "Get the connected wallet's balances on Pharos: native PROS and USDC. Takes no arguments — it always reads the currently connected wallet, and cannot query an arbitrary address.",
+    inputSchema: {},                                    // 无入参
+    annotations: { title: 'Get wallet balances', readOnlyHint: true },
+    outputSchema: { type: 'object', properties: { /* connected / address / chainId / pros / usdc ... */ }, required: ['connected'] },
+    handler: () => {
+      if (!address) return { connected: false as const };
+      return {
+        connected: true as const,
+        address, chainId, chainName: CHAIN_NAME, correctChain: isCorrectChain,
+        pros: { symbol: TOKENS.PROS.symbol, balance: prosBalance ?? undefined },
+        usdc: { symbol: TOKENS.USDC.symbol, balance: usdcBalance ?? undefined, address: TOKENS.USDC.address },
+      };
+    },
+  },
+  [address, chainId, isCorrectChain, prosBalance, usdcBalance]   // handler 闭包读到的所有值
+);
+```
+
+三个设计点：
+
+- **`inputSchema: {}` 是故意的**——工具不接受地址参数，永远只读当前连接的钱包，防止模型代查别人的地址。
+- **handler 不发请求**，只是把页面已经渲染出来的余额（`useBalances` 的 state）整理成结构化输出。AI 看到的数值和卡片上的数值必然一致。
+- **`deps` 一定要写全**：handler 闭包里读到的每个值都得进数组，否则工具会拿到陈旧闭包里的旧余额。
+
+### 工具 2：`wallet_transfer`（写，有副作用）
+
+入参 `{ token: 'PROS'|'USDC', to: string, amount: string }`，`annotations: { readOnlyHint: false, destructiveHint: true }`。
+
+handler 是一串顺序闸门，返回值用 `status` 区分五种结局：
+
+```ts
+handler: async ({ token, to, amount }) => {
+  const toAddress = String(to ?? '').trim();
+  const amountText = String(amount ?? '').trim();
+
+  // 闸门 1：本地校验 —— 直接复用手动表单在用的那份 validateTransfer，不重写
+  const v = validateTransfer(
+    { token: key, to: toAddress, amount: amountText },
+    { connected: Boolean(address), isCorrectChain, balance }
+  );
+  if (!v.ok) return { status: v.status, /* failed 或 blocked */ ...  };
+
+  // 闸门 2：人工确认弹窗（和手动转账同一个弹窗）
+  const confirmed = await requestConfirm({ token: key, symbol: meta.symbol, amount: amountText, to: toAddress, balance });
+  if (!confirmed) return { status: 'declined', message: '用户在确认框里取消了这笔转账。除非用户再次要求，不要重试。' };
+
+  // 闸门 3：钱包签名
+  const txHash = await transfer({ token: key, to: toAddress, amount: amountText });
+  if (!txHash) return { status: 'rejected', message: lastTransferError ?? '转账没有完成：用户拒签或交易失败。' };
+
+  refreshBalances();
+  return { status: 'submitted', txHash, explorerUrl: txUrl(txHash), message: `已发出 ...（只等交易发出，不等上链确认）` };
+}
+```
 
 | status | 含义 |
 |---|---|
 | `submitted` | 交易已发出（拿到 `tx.hash`），**不代表已上链确认** |
-| `declined` | 用户在确认弹窗里点了取消——message 会明确提示"不要重试" |
-| `rejected` | 用户在钱包里拒绝签名，或交易发送失败 |
-| `blocked` | 当前不允许执行（例如链不对），换个前提条件即可重试 |
-| `failed` | 本地校验未通过（地址非法 / 金额非法 / 余额不足 / 未连接钱包）|
+| `declined` | 用户在确认弹窗点了取消——message 明确告诉模型不要重试 |
+| `rejected` | 用户在钱包拒签，或交易发送失败 |
+| `blocked` | 当前前提不允许（例如链不对），换条件可重试 |
+| `failed` | 本地校验没过（未连接 / 地址非法 / 金额非法 / 余额不足）|
 
-handler 内部闸门顺序：`validateTransfer`（未连接→`failed`；链不对→`blocked`；地址非法→`failed`；金额非法或超余额→`failed`）→ 弹确认框等待用户点击（取消→`declined`）→ `useTransfer().transfer(...)`（失败/拒签→`rejected`；成功→`submitted` 并触发 `refreshBalances()`）。模型**无法跳过**确认框和钱包签名这两步。
+三个设计点：
 
-## 6. 接入你自己的页面要改哪几处
+- **模型无法跳过闸门 2 和 3**。工具能做的最坏情况是"诱导用户签一笔他本不想签的交易"，而这一步会被确认弹窗（展示金额 / 地址全文 / 余额）和钱包签名各拦一次。
+- **校验逻辑只有一份**：`validateTransfer` 由手动表单和工具 handler 共用，不存在"UI 拦住了但工具没拦住"的缝。
+- **状态语义写进 description / message 里给模型看**。比如 `declined` 的 message 直接写"不要重试"，`submitted` 的 message 提醒余额刷新可能还是转账前的数——模型的行为靠这些文案约束，而不是靠调用方额外写胶水代码。
 
-1. **`index.html`** 内联 `<script>` 里的 `window.__webModelContextOptions.transport.tabServer.channelId`——换成你自己的 channel 名。这段脚本必须在 `@mcp-b/global` 被 import 之前执行（该库一被 import 就会读取这个全局变量并自动初始化），所以只能放在 `index.html` 的内联脚本里，不能挪进 `main.tsx`。
-2. **`src/mcp/mcpClient.ts`** 里的 `MCP_CHANNEL_ID` 常量必须与①里的 channelId **完全一致**——两边不同步会导致 client 永远连不上 server，只会在 `TabClientTransport` 的 `requestTimeout` 超时后收到 MCP `-32001`。
-3. 参照 `src/mcp/useWalletWebMcpTools.ts` 写你自己的 `useXxxWebMcpTools`：用 `useWebMCP({ name, description, inputSchema, outputSchema, annotations, handler }, deps)` 把你页面已有的能力（读数据 / 触发某个动作）包装成工具；`deps` 数组一定要带上 handler 闭包里读到的所有最新值，否则工具会用陈旧的闭包数据。
-4. 把 `<McpClientProvider client={...} transport={...}>` 包在需要用到工具的组件外层（参考 `src/App.tsx` 的 `App` 组件），再把聊天面板（`<ChatLauncher/>` + `<ChatDrawer/>`，或你自己的 UI）挂进页面——聊天面板通过 `useMcpClient()` 拿到已注册工具，再经 `mcpToolsToAiTools()` 转成 AI SDK 的 `ToolSet` 交给 `createChatAdapter()`。
+---
 
-## 7. 安全边界（必读）
+### 一次 `wallet_transfer` 的完整时序
 
-1. **LLM API key 会暴露**：`VITE_` 前缀的变量会被打进前端产物，任何人都能从 bundle 里提取出来。这仅适用于本地 / 内网 demo；生产环境必须改成后端代理，不能让浏览器直连 LLM 服务商。交付物里 `VITE_LLM_API_KEY` 留空。
-2. **工具对同 tab 的浏览器扩展可见，无法只对页内 chat 开放**：WebMCP 把工具注册到 `document.modelContext` 并通过 tab transport 广播，同一个浏览器 tab 内任何连接到这个 channel 的 MCP 客户端（包括 MCP-B 浏览器扩展）都能 list/call 这些工具。缓解措施：`allowedOrigins` 限制到本 origin；转账强制"确认框 + 钱包签名"两道人工闸门。如果要做到严格隔离（只对页内 chat 开放），就必须放弃 mcp-b、自己实现一套内存工具注册表——本 demo 不做这个。
-3. **模型永远拿不到私钥**：最坏情况是模型诱导用户签一笔他不想签的交易，而这一步会被确认框（展示金额/地址全文/余额）和钱包签名各拦一次。
+把第 2 节的连接链路和上面的两道闸门串起来看（画法参考规范仓库 `docs/service-workers.md` 里的时序图）：
 
-## 8. 手动验证清单
+```mermaid
+sequenceDiagram
+actor U as 用户
+participant C as AI chat widget · ChatDrawer
+participant M as LLM
+participant T as MCP client · TabClientTransport
+participant S as MCP server · document.modelContext
+participant H as wallet_transfer handler · useWebMCP
+participant W as 钱包与链
 
-⚠️ 以下 10 条来自设计文档 §6，**尚未由真人跑过**——此前各 task 只做到了 `pnpm build` 通过 + headless 场景下的代码/断言检查；凡是需要真实钱包签名或会产生真实 LLM 调用费用的步骤，都标记为 `PENDING-HUMAN`，等交付后由使用方实际执行确认。
+U->>C: 转 0.1 PROS 给 0xabc…
+C->>M: prompt + ToolSet，工具表来自 useMcpClient
+activate M
+M-->>C: tool call · wallet_transfer token/to/amount
+deactivate M
+C->>T: ToolSet.execute → client.callTool
+T->>S: postMessage · channelId = webmcp-wallet-demo
+S->>H: 调用 handler
+activate H
+H->>H: 闸门 1 · validateTransfer，与手动表单共用同一份校验
+rect rgba(128, 128, 255, 0.3)
+Note over U,W: 两道人工闸门 —— 模型无法跳过
+H->>U: 闸门 2 · 弹出确认框，展示金额 / 地址全文 / 余额
+U-->>H: 点击确认（点取消 → status declined）
+H->>W: 闸门 3 · 发起交易，请求钱包签名
+U-->>W: 在钱包里签名（拒签 → status rejected）
+end
+W-->>H: tx.hash（只等交易发出，不等上链确认）
+H->>H: refreshBalances，页面卡片同步刷新
+H-->>S: status submitted + txHash + explorerUrl + message
+deactivate H
+S-->>T: postMessage 回灌结果
+T-->>C: tool result
+C->>M: 结果回灌，同一轮继续（stopWhen stepCountIs 5）
+activate M
+M-->>C: 用自然语言转述 status 与 txHash
+deactivate M
+C-->>U: 回复
+```
 
-1. `PENDING-HUMAN` `pnpm install --ignore-workspace && pnpm build` —— tsc 与 vite build 通过（在本仓库内**必须**带 `--ignore-workspace`，把目录拷出仓库后用普通 `pnpm install` 即可；已用干净重装验证一次，见下方 Step 2 / Step 3 记录，仍建议交付方自己再跑一次）
-2. `PENDING-HUMAN` `pnpm dev` 打开页面：未连钱包时提示连接；连接后余额卡片数值与 pharosscan 上一致
-3. `PENDING-HUMAN` chat 问"我有多少 USDC 和 PROS"→ 数值与页面卡片一致
-4. `PENDING-HUMAN` chat 说"转 0.0001 PROS 给 <自己另一个地址>"→ 弹确认框 → 签名 → 返回 txHash，pharosscan 能查到；页面余额自动刷新
-5. `PENDING-HUMAN` 同一路径点"取消"→ 模型说明已取消且不重试
-6. `PENDING-HUMAN` USDC 转账重复第 4、5 条
-7. `PENDING-HUMAN` 手动转账表单走通同样两条路径（与工具共用确认框）
-8. `PENDING-HUMAN` 钱包切到别的链 → chat 提示切链，`wallet_transfer` 返回 `blocked`
-9. `PENDING-HUMAN` 断开钱包 → `wallet_get_balances` 返回 `connected:false`，模型让用户先连钱包
-10. `PENDING-HUMAN` 清空 `VITE_LLM_API_KEY` → chat 面板显示未配置提示，不出现空气泡
+只读的 `wallet_get_balances` 是同一条链路去掉中间那个高亮区——没有人工闸门，handler 同步返回页面已有的 state。
 
-## 9. 已知限制
+---
 
-- **无自动化测试**：本工程未引入任何测试框架，所有验证都是手动的（见第 8 节）。
-- **只支持注入式钱包**：只接 `window.ethereum`（EIP-1193），没有 WalletConnect，没有其他连接方式。
-- **只支持一条链**：期望的 chainId 由 `.env` 的 `VITE_CHAIN_ID` 决定，工具与 UI 都不支持多链切换调用，只会在链不对时提示切换到那一条链。
-- **转账只等交易发出，不等上链确认**：`useTransfer` 只等 `tx.hash`（交易被节点接受），不 `await tx.wait()`。这意味着 `wallet_transfer` 返回 `submitted` 之后立刻触发的余额刷新，很可能还读到转账前的旧值——工具的 `message` 字段里会附带这句提醒，但如果你自己接入时改写了这部分逻辑，要注意别把"已发出"当成"已确认"。
+## 4. 接到你自己的页面
+
+1. 复制 `index.html` 的内联脚本，把 `channelId` 改成你自己的名字（必须在 `@mcp-b/global` 被 import 之前执行）。
+2. 复制 `src/mcp/mcpClient.ts`，`MCP_CHANNEL_ID` 与上一步**完全一致**；若有需要用户交互的慢工具，把 `requestTimeout` 放大。
+3. 参照 `src/mcp/useWalletWebMcpTools.ts` 写自己的 `useXxxWebMcpTools`，用 `useWebMCP()` 包装页面**已有**的能力，`deps` 写全。
+4. `<McpClientProvider>` 包在需要工具的组件外层，然后把 chat widget（`<ChatLauncher/>` + `<ChatDrawer/>`，或你自己的 UI）挂进页面。
+
+## 5. 两条必须知道的安全边界
+
+1. **工具对同 tab 的浏览器扩展可见，做不到"只对页内 chat 开放"**。工具注册在 `document.modelContext` 上并通过 tab transport 广播，同 tab 内任何连上这个 channel 的 MCP 客户端（包括 MCP-B 扩展）都能 list/call。缓解手段就是 `allowedOrigins` 限制到本 origin + 写操作强制人工闸门。要严格隔离就得放弃 mcp-b、自己实现内存工具注册表——本 demo 不做。
+2. **`VITE_LLM_API_KEY` 会被打进前端产物**，任何人可从 bundle 提取。仅限本地 / 内网 demo；生产必须改后端代理。
