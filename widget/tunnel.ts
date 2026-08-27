@@ -11,8 +11,21 @@
 
 import { makeEnvelope, matchEnvelope, TUNNEL_CHANNEL_ID } from '@/mcp/tunnelEnvelope';
 
+/**
+ * socket 只需要「发字符串」和「监听 message 事件」这两件事，用不到整个
+ * WebSocket 接口。`Pick<WebSocket, 'send' | 'addEventListener'>` 看似收窄，
+ * 实际上把 `addEventListener` 的完整 DOM 重载集也带了进来 —— 测试里手写的假
+ * socket（server/tunnel.integration.test.ts、widget/tunnel.test.ts）只实现了
+ * 'message' 一种事件，够用但满足不了那个重载集，会被判定类型不兼容。这里按
+ * 实际用到的最小接口重新声明，真实 WebSocket 结构上仍然满足它。
+ */
+export interface TunnelSocket {
+  send(data: string): void;
+  addEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
+}
+
 export interface WidgetTunnelOptions {
-  socket: Pick<WebSocket, 'send' | 'addEventListener'>;
+  socket: TunnelSocket;
   /** 宿主页面 origin，双向校验用 */
   hostOrigin: string;
   /** 注入用，默认 globalThis.window */
