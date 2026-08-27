@@ -85,44 +85,55 @@ describe('WS → 宿主页面', () => {
 
 describe('宿主页面 → WS', () => {
   it('剥掉信封，把裸 payload 序列化后发进 WS', () => {
-    const { sock, self } = setup();
+    const { sock, self, parent } = setup();
     const res = { jsonrpc: '2.0', id: 1, result: { tools: [] } };
 
     self.deliver({
       data: makeEnvelope(TUNNEL_CHANNEL_ID, 'server-to-client', res),
       origin: HOST_ORIGIN,
-      source: undefined,   // 由实现填 parentWindow
+      source: parent.win,
     });
 
     expect(sock.sent).toEqual([JSON.stringify(res)]);
   });
 
   it('控制字符串原样发（不能 JSON.stringify 成带引号的字面量，否则服务器认不出）', () => {
-    const { sock, self } = setup();
+    const { sock, self, parent } = setup();
     self.deliver({
       data: makeEnvelope(TUNNEL_CHANNEL_ID, 'server-to-client', SERVER_READY),
       origin: HOST_ORIGIN,
-      source: undefined,
+      source: parent.win,
     });
     expect(sock.sent).toEqual([SERVER_READY]);
   });
 
   it('origin 不对的消息丢弃', () => {
-    const { sock, self } = setup();
+    const { sock, self, parent } = setup();
     self.deliver({
       data: makeEnvelope(TUNNEL_CHANNEL_ID, 'server-to-client', { a: 1 }),
       origin: 'https://evil.example',
-      source: undefined,
+      source: parent.win,
+    });
+    expect(sock.sent).toEqual([]);
+  });
+
+  it('source 不对的消息丢弃（同源下别的窗口冒充宿主页面）', () => {
+    const { sock, self } = setup();
+    const impostor = makeFakeWindow();
+    self.deliver({
+      data: makeEnvelope(TUNNEL_CHANNEL_ID, 'server-to-client', { a: 1 }),
+      origin: HOST_ORIGIN,
+      source: impostor.win,
     });
     expect(sock.sent).toEqual([]);
   });
 
   it('方向不对的消息丢弃（自己发出去的那条不会被自己收回来）', () => {
-    const { sock, self } = setup();
+    const { sock, self, parent } = setup();
     self.deliver({
       data: makeEnvelope(TUNNEL_CHANNEL_ID, 'client-to-server', { a: 1 }),
       origin: HOST_ORIGIN,
-      source: undefined,
+      source: parent.win,
     });
     expect(sock.sent).toEqual([]);
   });

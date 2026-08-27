@@ -43,7 +43,11 @@ export function startWidgetTunnel(options: WidgetTunnelOptions): () => void {
 
   // 宿主页面 → WS：剥掉信封
   const onMessage = (event: MessageEvent) => {
+    // origin 只能证明消息来自宿主页面的 origin，不能证明是宿主页面本身发的
+    // （同源下别的窗口也能伪造）；与 hostTunnel.ts 的两个分支对齐，origin
+    // 和 source 都要校验，才是完整的来源保证
     if (event.origin !== hostOrigin) return;
+    if (event.source !== parentWindow) return;
     if (!matchEnvelope(event.data, TUNNEL_CHANNEL_ID, 'server-to-client')) return;
 
     const { payload } = event.data;
