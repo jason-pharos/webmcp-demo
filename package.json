@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -n host,server -c cyan,magenta \"vite\" \"pnpm dev:server\"",
+    "dev:host": "vite",
+    "dev:server": "tsx --env-file=.env server/index.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -30,6 +32,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.4",
     "tsx": "^4.23.12",
     "typescript": "~5.9.3",
     "vite": "^7.2.4",
