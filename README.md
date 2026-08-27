@@ -38,7 +38,7 @@ graph TD
     subgraph SRV["<b><i>Node 服务器 · localhost:8787</i></b>"]
         AG["Agent<br>server/chat.ts · streamText"]
         MC["MCP client<br>@modelcontextprotocol/sdk"]
-        WT["WebSocketTunnelClientTransport<br>自写 · 约 90 行"]
+        WT["WebSocketTunnelClientTransport<br>自写 · 约 150 行"]
     end
 
     subgraph WB["<b><i>Web browser</i></b>"]
@@ -246,13 +246,15 @@ W-->>U: 回复
 3. **widget 侧**（如果 widget 也是你自己的）：复制 `widget/tunnel.ts`，连上 WS 之后立刻装转发器。
 4. **服务器侧**：复制 `server/WebSocketTunnelClientTransport.ts` 与 `server/sessions.ts`，每个 WS 连接建一个 `Client`，`callTool` 记得传够长的 `timeout`。
 
-## 5. 三条必须知道的安全边界
+## 5. 四条必须知道的安全边界
 
 1. **工具对同 tab 的其它 MCP 客户端可见，做不到"只对这个 agent 开放"**。工具注册在 `document.modelContext` 上并通过 tab transport 广播，同 tab 内任何连上这个 channel 的客户端（包括 MCP-B 浏览器扩展）都能 list/call。缓解手段是 `allowedOrigins` 限制到本 origin + 写操作强制人工闸门。要严格隔离就得放弃 mcp-b、自己实现内存工具注册表——本 demo 不做。
 
-2. **跨 origin 的 postMessage 靠双向 origin 校验，这是隧道唯一的来源保证**。宿主侧只接受 `event.origin === WIDGET_ORIGIN` 且 `event.source === iframe.contentWindow` 的消息；widget 侧只接受 `event.origin === HOST_ORIGIN` 的消息。任何一侧写成 `'*'` 都会让页面上任意脚本能往隧道里灌 JSON-RPC。
+2. **跨 origin 的 postMessage 靠双向 origin 校验，这是隧道唯一的来源保证——但它保证的是"这条隧道确实通向你选定的 widget"，不保证那个 widget 值得信任**。宿主侧只接受 `event.origin === WIDGET_ORIGIN` 且 `event.source === iframe.contentWindow` 的消息；widget 侧只接受 `event.origin === HOST_ORIGIN` 的消息。任何一侧写成 `'*'` 都会让页面上任意脚本能往隧道里灌 JSON-RPC。但即便两侧都校验严实，第 4 节步骤 2 里 `widgetOrigin` 一旦填上了别人的 origin，你就是在把这条通了的隧道**交给**那个 origin——见下面第 4 条。
 
-3. **本实验没有做 WebSocket 鉴权，云端部署前必须补上**。现在服务器绑 `127.0.0.1`，WS 层只校验 `Origin` 头——这挡得住浏览器里的跨站请求，挡不住任何非浏览器客户端。云端部署必须改成：宿主页面向你的后端换取一个短期会话令牌，widget 建立 WS 时带上，服务器验签后才建 session。否则任何人都能连上你的 relay 并驱动别人页面上的工具。
+3. **本实验没有做 WebSocket 鉴权，云端部署前必须补上**。现在服务器绑 `127.0.0.1`，WS 层只校验 `Origin` 头——这挡得住浏览器里的跨站请求，挡不住任何非浏览器客户端。云端部署必须改成：宿主页面向你的后端换取一个短期会话令牌，widget 建立 WS 时带上，服务器验签后才建 session。否则任何人都能连上你的 relay 并驱动别人页面上的工具。**这也不是唯一要做的事**：整个 8787 进程是 dev-only 的——`server/index.ts` 无条件用 vite middleware 模式起了个 dev server 兜底，未命中的路由都会落到 `vite.middlewares`，等于把源码树当模块服务了出去；widget 也还没有生产构建产物（它不是 `vite build` 的入口，这是本 demo 故意不做的事，见下一节，但不代表能直接上云）；`/api/chat` 目前把 `sessionId` 当成唯一凭证使用（`server/index.ts` 里 `registry.get(payload.sessionId)`），谁拿到这个 UUID 就能驱动 agent、进而触发页面上的 `wallet_transfer` 确认框——UUID 不好猜，暂时不是个能利用的洞，但云端部署要做的不只是给 WS 加令牌，还要给 widget 出静态产物、给 `/api/chat` 补上与 WS 同一套鉴权。
+
+4. **接入第三方 widget，等于把你页面上全部 WebMCP 工具的调用权交给它**。第 4 节步骤 2 里 `widgetOrigin` 填的是 agent 服务商的 origin——一旦填上，那个 origin 的代码就能通过隧道 list/call 页面注册的每一个工具，包括 `wallet_transfer`。第 2 条的 origin 校验只保证隧道另一端确实是你选的那个 origin，并不限制那个 origin 能拿隧道做什么。这之后能兜底的只剩人工闸门：`wallet_transfer` 的确认弹窗（金额 / 地址 / 余额全文展示）和钱包本身的签名请求——参见第 3 节"工具 2"里的两道闸门。选 widget 服务商前，这份信任是你在做的真实决定。
 
 ## 6. 为什么不用 MCP-B 现成的方案
 
@@ -264,7 +266,7 @@ MCP-B（[WebMCP-org/npm-packages](https://github.com/WebMCP-org/npm-packages)）
 
 3. **`webmcp-local-relay` 形状对但代价不对**。它的架构确实是「页面 → 隐藏 iframe → WebSocket → 服务器 MCP」，但面向 localhost + stdio（端口扫描发现、server/client 双模式），而且**不传 MCP 协议**——它用一套自定义信封（`hello` / `tools/list` / `invoke` / `result`）在服务器端**重建**一个 MCP server，代价是丢掉通知、progress、`tools/list_changed` 这些原生语义，还要维护两套 schema。而云端真正需要的会话鉴权，它反而没有。
 
-4. **所以我们打隧道，不重建**。MCP 的 `Transport` 接口只有 6 个成员（`start` / `send` / `close` + 三个回调），所以两端哑转发原样的 JSON-RPC、服务器端自写一个 transport 交给官方 `Client` 就够了——约 180 行新代码，协议保真度反而比方案 3 更高。
+4. **所以我们打隧道，不重建**。MCP 的 `Transport` 接口只有 6 个成员（`start` / `send` / `close` + 三个回调），所以两端哑转发原样的 JSON-RPC、服务器端自写一个 transport 交给官方 `Client` 就够了——三个隧道文件加起来约 290 行新代码（`hostTunnel.ts` 66 行 + `widget/tunnel.ts` 72 行 + `WebSocketTunnelClientTransport.ts` 150 行），协议保真度反而比方案 3 更高。
 
 完整的调研与取舍见 `docs/superpowers/specs/2026-08-27-webmcp-server-agent-tunnel-design.md`。
 

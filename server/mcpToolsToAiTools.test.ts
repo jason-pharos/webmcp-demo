@@ -25,12 +25,20 @@ describe('mcpToolsToAiTools', () => {
   });
 
   it('callTool 失败时 execute 返回 { error }，不抛异常', async () => {
-    const callTool = vi.fn().mockRejectedValue(new Error('用户拒绝了签名'));
-    const client = { callTool } as unknown as Client;
+    // 生产代码里这条失败路径会 console.error 一份堆栈（这是对的，方便排查）；
+    // 测试里把它静音，不然一次预期内的失败会在通过的测试输出里打印堆栈，
+    // 让真正的失败更难从输出里被看见。
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const callTool = vi.fn().mockRejectedValue(new Error('用户拒绝了签名'));
+      const client = { callTool } as unknown as Client;
 
-    const toolSet = mcpToolsToAiTools([tool], client);
-    const result = await toolSet[tool.name].execute!({}, {} as never);
+      const toolSet = mcpToolsToAiTools([tool], client);
+      const result = await toolSet[tool.name].execute!({}, {} as never);
 
-    expect(result).toEqual({ error: '用户拒绝了签名' });
+      expect(result).toEqual({ error: '用户拒绝了签名' });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

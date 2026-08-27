@@ -9,7 +9,7 @@ import { ComposerPrimitive } from '@assistant-ui/react';
 
 export function Composer({ focus }: { focus: boolean }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // ChatDrawer 常驻挂载（只用 transform 收起，为了保留对话历史），所以不能用无条件的
+  // WidgetChat 常驻挂载（只用 transform 收起，为了保留对话历史），所以不能用无条件的
   // autoFocus——那会在页面刚加载、用户还没点开抽屉时，就把键盘焦点抢到这个屏幕外的
   // 输入框上，打断页面正常的初始焦点与 tab 顺序。改成抽屉打开时才主动 focus。
   useEffect(() => {

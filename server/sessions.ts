@@ -78,8 +78,4 @@ export class SessionRegistry {
   get(id: string): Session | undefined {
     return this._sessions.get(id);
   }
-
-  list(): Session[] {
-    return [...this._sessions.values()];
-  }
 }
