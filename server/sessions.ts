@@ -46,22 +46,33 @@ export class SessionRegistry {
 
     socket.onMessage((raw) => transport.handleIncoming(raw));
 
-    const client = new Client({ name: 'webmcp-demo-server-agent', version: '1.0.0' });
-    // Client.connect 内部会调 transport.start()，握手随之开始
-    await client.connect(transport);
-
-    const { tools } = await client.listTools();
-
-    const session: Session = { id, client, transport, tools };
-    this._sessions.set(session.id, session);
-
-    // socket 断了就销毁 session，否则 map 会随着页面刷新无限增长
+    // 必须在 connect()/listTools() 之前就挂 onClose：握手是两次异步往返
+    // （initialize 之后还有 tools/list），中途 socket 断开也得被捕捉到，
+    // 不然没人调 transport.handleSocketClose()，只能干等 SDK 默认 60s 的
+    // 单次请求超时。用 registered 标记而不是直接引用 session，因为这一刻
+    // session 对象还不存在——没注册过就什么都不用删，是安全的空操作。
+    let registered = false;
     socket.onClose(() => {
       transport.handleSocketClose();
-      this._sessions.delete(session.id);
+      if (registered) this._sessions.delete(id);
     });
 
-    return session;
+    const client = new Client({ name: 'webmcp-demo-server-agent', version: '1.0.0' });
+    try {
+      // Client.connect 内部会调 transport.start()，握手随之开始
+      await client.connect(transport);
+      const { tools } = await client.listTools();
+
+      const session: Session = { id, client, transport, tools };
+      this._sessions.set(id, session);
+      registered = true;
+
+      return session;
+    } catch (err) {
+      // 握手没走完就失败：client 不能悬着，map 里也不能留下半成品 session
+      await client.close().catch(() => {});
+      throw err;
+    }
   }
 
   get(id: string): Session | undefined {
