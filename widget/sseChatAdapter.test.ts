@@ -85,13 +85,15 @@ describe('createSseChatAdapter', () => {
   });
 
   it('请求体带上 sessionId 与压平成文本的消息', async () => {
-    const fetchMock = vi.fn(async () => sseResponse([{ type: 'done' }]));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse([{ type: 'done' }])
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await collect(createSseChatAdapter(() => 'sess-42'));
 
     const [, init] = fetchMock.mock.calls[0]!;
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+    expect(JSON.parse(init!.body as string)).toEqual({
       sessionId: 'sess-42',
       messages: [{ role: 'user', content: '余额多少' }],
     });
