@@ -1,160 +1,85 @@
 # WebMCP Wallet Demo
 
-一个最小示例：**把 web3 页面已有的功能，通过 WebMCP 注入给页内的 AI chat widget**。
+一个最小示例：**把 web3 页面已有的功能，通过 WebMCP 注入给跑在服务器端的 AI agent**。
 
-页面本身有一套普通 UI（连钱包 / 余额卡片 / 转账表单）。WebMCP 做的事情只是把其中两个已有能力——**查余额**、**转账**——注册成 MCP 工具，让 chat widget 里的模型可以发现并调用它们。**没有为 AI 重写一套业务逻辑**，工具 handler 直接复用页面自己在用的那几个 hook。
+页面本身有一套普通 UI（连钱包 / 余额卡片 / 转账表单）。WebMCP 做的事情只是把其中两个已有能力——**查余额**、**转账**——注册成 MCP 工具，让服务器端的 agent 可以发现并调用它们。**没有为 AI 重写一套业务逻辑**，工具 handler 直接复用页面自己在用的那几个 hook。
 
 ```bash
-cp .env.example .env   # 至少填 VITE_LLM_API_KEY
-pnpm install && pnpm dev
+cp .env.example .env   # 至少填 LLM_API_KEY
+pnpm install && pnpm dev   # 同时起宿主页面(5273) 与 widget+agent 服务器(8787)
 ```
 
 ---
 
 ## 1. 依赖包：@mcp-b/* 各管什么
 
-WebMCP 的实现来自 [MCP-B](https://github.com/MiguelsPizza/WebMCP) 的三个包，加上官方 MCP SDK。它们的分工是本 demo 最需要先搞清楚的一件事：
+WebMCP 的实现来自 [MCP-B](https://github.com/WebMCP-org/npm-packages) 的三个包，加上官方 MCP SDK。它们的分工是本 demo 最需要先搞清楚的一件事：
 
 | 包 | 角色 | 在本 demo 的用法 |
 |---|---|---|
 | `@mcp-b/global` | **MCP server 端**。在页面里装一个 `document.modelContext` 运行时，并按配置起一个 tab transport 的 server | `index.html` 内联脚本配置 + `src/main.tsx` 兜底调用 `initializeWebModelContext()` |
-| `@mcp-b/react-webmcp` | **React 绑定**。`useWebMCP()` 注册工具（server 侧）；`<McpClientProvider>` / `useMcpClient()` 管理客户端连接与工具列表（client 侧） | `src/mcp/useWalletWebMcpTools.ts`、`src/App.tsx`、`src/components/aiChat/ChatDrawer.tsx` |
-| `@mcp-b/transports` | **传输层**。`TabClientTransport` 走 `window.postMessage`，让同一个 tab 内的 client 连上 server | `src/mcp/mcpClient.ts` |
-| `@modelcontextprotocol/sdk` | 官方 MCP 协议实现，上面三个包的底座。这里只直接用到 `Client` | `src/mcp/mcpClient.ts` |
+| `@mcp-b/react-webmcp` | **React 绑定**。只剩 `useWebMCP()` 注册工具（server 侧）；`McpClientProvider` / `useMcpClient` 已不再使用——页面里已经没有 client 了 | `src/mcp/useWalletWebMcpTools.ts` |
+| `@mcp-b/transports` | 不再直接使用其 transport 类。只**复用它的 postMessage 信封格式**（`src/mcp/tunnelEnvelope.ts`）——server 端的 transport 是自己写的 | `src/mcp/tunnelEnvelope.ts` 参照其源码逐字对齐 |
+| 自写隧道 | 三段自写代码，把上面的 server 端接到跑在服务器进程里的 MCP client | `src/mcp/hostTunnel.ts`（宿主页面侧转发）/ `widget/tunnel.ts`（iframe 侧转发）/ `server/WebSocketTunnelClientTransport.ts`（服务器端 transport） |
+| `@modelcontextprotocol/sdk` | 官方 MCP 协议实现，上面的 client/server 都是它的实例 | server 端 `Client`；页面端由 `@mcp-b/global` 内部使用 |
 
-关键认知：**server 和 client 都在同一个页面里**。页面既是"暴露能力的一方"（server），又是"消费能力的一方"（client，因为 chat widget 也在这个页面）。两者不共享内存，而是通过 postMessage 上的 MCP 协议对话——正因为如此，同 tab 的浏览器扩展（如 MCP-B extension）也能连上同一个 channel。
+关键认知：**server 在页面里，client 在服务器上**。页面仍然是暴露能力的一方（MCP server，`document.modelContext`），但消费能力的一方（MCP client）搬到了 Node 进程里。两者之间隔着三跳：tab channel 的 postMessage、跨 origin 的 postMessage、WebSocket。这三跳传的都是**原样的 JSON-RPC**，所以 MCP 的语义一点没丢。
 
 ---
 
-## 2. 页面 WebMCP 与 AI chat widget 怎么建立连接
+## 2. 页面 WebMCP 与服务器 agent 怎么建立连接
 
-整体形状（图的画法参考 [webmachinelearning/webmcp](https://github.com/webmachinelearning/webmcp) 的 *WebMCP In-browser tool flow*，但那张图里的 agent 是**浏览器内置**的；本 demo 的 agent 是**页面自带的 chat widget**，所以 MCP server 和 client 都在同一个页面里，靠 `postMessage` 对话）：
+整体形状（图的画法参考 [webmachinelearning/webmcp](https://github.com/webmachinelearning/webmcp) 的 *WebMCP In-browser tool flow*，但那张图里的 agent 是**浏览器内置**的；本 demo 的 agent 是**跑在 Node 服务器进程里**的，中间要经过 iframe 与 WebSocket 才能碰到页面里的 MCP server）：
 
 ```mermaid
 graph TD
     LLM["<b><i>LLM 服务商</i></b><br>任意 OpenAI 兼容端点"]
 
-    subgraph WB["<b><i>Web browser · 同一个 tab</i></b>"]
-        subgraph RP["<b>Running Page 'index.html'</b>"]
-            CW["AI chat widget<br>ChatDrawer + assistant-ui runtime"]
-            CL["MCP client<br>mcpClient.ts · TabClientTransport"]
+    subgraph SRV["<b><i>Node 服务器 · localhost:8787</i></b>"]
+        AG["Agent<br>server/chat.ts · streamText"]
+        MC["MCP client<br>@modelcontextprotocol/sdk"]
+        WT["WebSocketTunnelClientTransport<br>自写 · 约 90 行"]
+    end
+
+    subgraph WB["<b><i>Web browser</i></b>"]
+        subgraph WG["<b>iframe · localhost:8787/widget</b>"]
+            UI["聊天 UI<br>assistant-ui + SSE adapter"]
+            WTUN["隧道哑转发<br>widget/tunnel.ts"]
+        end
+        subgraph RP["<b>宿主页面 · localhost:5273</b>"]
+            HTUN["隧道哑转发<br>src/mcp/hostTunnel.ts"]
             SV[("MCP server<br>document.modelContext<br>@mcp-b/global")]
             WMCP["WebMCP 工具<br>wallet_get_balances · wallet_transfer"]
             BIZ["页面既有能力<br>useBalances · useTransfer · useTransferConfirm"]
         end
-        EXT["同 tab 的其它 MCP 客户端<br>如 MCP-B 浏览器扩展"]
     end
 
     CHAIN["<b><i>钱包与链</i></b><br>window.ethereum · Pharos"]
 
-    CW <-->|"1. 用户 prompt 与模型回复，浏览器直连"| LLM
-    CW -->|"2. 模型发 tool call，进 AI SDK ToolSet.execute"| CL
-    CL <-->|"3. MCP over window.postMessage，channelId 两端必须一致"| SV
-    SV -->|"4. 路由到 useWebMCP 注册的 handler"| WMCP
-    WMCP -->|"5. handler 复用页面已有的 hook，不重写业务逻辑"| BIZ
-    BIZ <-->|"6. 读余额 · 弹确认框 · 请求签名"| CHAIN
-    EXT -.->|"连上同一个 channel 也能 list/call 这些工具，见第 5 节"| SV
+    UI -->|"1. POST /api/chat，SSE 回吐"| AG
+    AG <-->|"2. 模型与工具调用，API key 只在服务器"| LLM
+    AG -->|"3. tool call → client.callTool"| MC
+    MC <--> WT
+    WT <-->|"4. WebSocket · 帧内容是原样 JSON-RPC"| WTUN
+    WTUN <-->|"5. 跨 origin postMessage · 双向校验 origin"| HTUN
+    HTUN <-->|"6. tab channel postMessage · channelId 两端一致"| SV
+    SV -->|"7. 路由到 useWebMCP 注册的 handler"| WMCP
+    WMCP -->|"8. handler 复用页面已有的 hook"| BIZ
+    BIZ <-->|"9. 读余额 · 弹确认框 · 请求签名"| CHAIN
 ```
 
-搭建这条链路是四步。
+四个要点：
 
-### ① + ② server 端：channelId 必须在 import 之前设好
-
-`index.html`：
-
-```html
-<script>
-  window.__webModelContextOptions = {
-    transport: {
-      tabServer: {
-        allowedOrigins: [location.origin],
-        channelId: 'webmcp-wallet-demo',
-      },
-    },
-  };
-</script>
-<script type="module" src="/src/main.tsx"></script>
-```
-
-**为什么必须写在 `index.html` 而不能挪进 `main.tsx`**：`@mcp-b/global` 在被 import 的那一刻就会读取这个全局变量并自动初始化（模块顶层副作用），而 ESM import 先于同模块的后续代码执行——也就是说它跑在 `main.tsx` 里那句显式 `initializeWebModelContext()` 之前。而 `initializeWebModelContext` 内部是 `if (runtime) return`，谁先跑谁生效。如果不在这里提前设置，server 会被钉死在默认的 `mcp-default` 通道上。
-
-`main.tsx` 里那次调用只是兜底（换了别的 HTML 入口时才真正生效）。
-
-### ③ client 端：单例 + 同一个 channelId
-
-`src/mcp/mcpClient.ts` 导出两个单例 getter：
-
-```ts
-export const MCP_CHANNEL_ID = 'webmcp-wallet-demo';  // ⚠️ 必须与 index.html 完全一致
-
-// 请求超时放到 10 分钟：wallet_transfer 要等用户点确认框 + 钱包签名
-const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
-
-getMcpClient()     // new Client({ name, version })，模块级单例
-getMcpTransport()  // new TabClientTransport({ targetOrigin, channelId, requestTimeout })
-```
-
-**必须是模块级单例**：React 重渲染时若重建 client/transport，会反复建连断连。
-
-`src/App.tsx` 把它们交给 provider：
-
-```tsx
-<WalletProvider>
-  <McpClientProvider client={getMcpClient()} transport={getMcpTransport()} opts={{}}>
-    <Page />
-  </McpClientProvider>
-</WalletProvider>
-```
-
-### ④ chat widget 侧：把 MCP 工具转成 AI SDK 的 ToolSet
-
-`ChatDrawer.tsx`：
-
-```tsx
-const { client, tools, isConnected } = useMcpClient();
-
-const toolSet = useMemo<ToolSet>(
-  () => (isConnected ? mcpToolsToAiTools(tools, client) : {}),
-  [tools, client, isConnected]
-);
-
-// adapter 只能创建一次，否则会重建 runtime、丢掉聊天记录
-// → 工具表不进依赖数组，用 ref 转交
-const toolSetRef = useRef(toolSet);
-useEffect(() => { toolSetRef.current = toolSet; }, [toolSet]);
-const adapter = useMemo(() => createChatAdapter(() => toolSetRef.current), []);
-const runtime = useLocalRuntime(adapter);
-```
-
-`src/mcp/mcpTools.ts` 做的转换很薄——把每个 MCP 工具的 JSON Schema 包成 AI SDK 的 tool，`execute` 里回调 `client.callTool()`：
-
-```ts
-set[t.name] = {
-  description: t.description ?? '',
-  inputSchema: jsonSchema(t.inputSchema ?? { type: 'object', properties: {} }),
-  execute: async (args) => {
-    try {
-      const res = await client.callTool({ name: t.name, arguments: args ?? {} });
-      return res.structuredContent ?? textOf(res.content) ?? {};
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };  // 不抛，避免打断整轮对话
-    }
-  },
-};
-```
-
-之后就是普通的 AI SDK tool-calling 循环（`src/ai/chatModel.ts`，`streamText` + `stopWhen: stepCountIs(5)`）：模型发 tool call → `execute` → `client.callTool` → postMessage 回到 server → `useWebMCP` 的 handler → 结果原路回灌 → 模型继续说话。
-
-### 两个踩坑点
-
-1. **channelId 不同步** → client 永远连不上 server，只会在 `requestTimeout` 超时后收到 MCP `-32001`。改一处必须同步改另一处（`index.html` ↔ `MCP_CHANNEL_ID`）。
-2. **React 19 StrictMode 下 `Already connected to a transport`**：`<McpClientProvider>` 的 connect effect 会 mount→cleanup→mount 两次，cleanup 时它只重置自己的 ref、从不调 `client.close()`，于是第二次 mount 在同一个 client 上再 connect 一次，SDK 的 `Protocol.connect()` 同步抛错。本 demo 的解法是在 `mcpClient.ts` 里给 `client.connect` 包一层幂等（同一个 transport 的重复调用复用第一次的 promise，换 transport 或真实失败照常抛）——不改 node_modules、不关 StrictMode。
-
-不想打开 chat 也能验证连接，看 `src/components/McpStatus.tsx`：`useMcpClient()` 直接给出连接状态与工具名列表。
+1. **两个哑转发器都不理解 MCP**，只搬 payload，所以控制字符串（`mcp-check-ready` / `mcp-server-ready` / `mcp-server-stopped`）与 JSON-RPC 一视同仁。这是隧道能保住全部 MCP 语义的原因——通知、progress、`tools/list_changed` 都不需要额外处理。
+2. **握手**：宿主页面的 `TabServerTransport` 只在 `start()` 时广播一次 ready，那时 WS 多半还没连上；好在 v4 每收到一次 `mcp-check-ready` 都会补发 ready，所以服务器端主动问一次即可（`WebSocketTunnelClientTransport.start()` 里的 `this._send(CHECK_READY)`），谁先启动都能握上手。
+3. **信封格式必须以实际安装的 v4 为准**（`src/mcp/tunnelEnvelope.ts`）。v4 是内联属性检查、没有 `isMcpMessage` / `postMcpMessage` 导出（那是 v5 的），格式对不上的症状是静默丢消息、不报错。所以格式集中在这一份文件里，并用测试钉死。
+4. **工具调用超时必须显式传**：`client.callTool` 默认 60s，而 `wallet_transfer` 要等用户点确认 + 签名，本项目在 `server/mcpToolsToAiTools.ts` 里设为 10 分钟（`TOOL_CALL_TIMEOUT_MS`）。
 
 ---
 
 ## 3. 两个页面功能怎么注册成工具
+
+**这一节的代码在本次改造中一行没动。** agent 从页内搬到服务器、中间加了 iframe 与 WebSocket 两跳，而工具注册处完全不受影响——这正是 MCP 这层抽象的价值：工具提供方不需要知道消费方在哪。
 
 全部在 `src/mcp/useWalletWebMcpTools.ts`——**这是理解本 demo 的入口文件**。
 
@@ -182,7 +107,7 @@ function Page() {
     requestConfirm: confirm.requestConfirm,   // 同一个确认弹窗，手动表单也在用
     refreshBalances: balances.refresh,
   });
-  // ... 下面是普通 UI：<BalanceCards/> <TransferForm/> <TransferConfirmDialog/> <ChatLauncher/>
+  // ... 下面是普通 UI：<BalanceCards/> <TransferForm/> <TransferConfirmDialog/> <AgentWidget/>
 }
 ```
 
@@ -266,46 +191,48 @@ handler: async ({ token, to, amount }) => {
 
 ### 一次 `wallet_transfer` 的完整时序
 
-把第 2 节的连接链路和上面的两道闸门串起来看（画法参考规范仓库 `docs/service-workers.md` 里的时序图）：
+把第 2 节的六跳连接链路和上面的两道闸门串起来看：
 
 ```mermaid
 sequenceDiagram
 actor U as 用户
-participant C as AI chat widget · ChatDrawer
+participant W as iframe widget
+participant A as 服务器 Agent
 participant M as LLM
-participant T as MCP client · TabClientTransport
-participant S as MCP server · document.modelContext
-participant H as wallet_transfer handler · useWebMCP
-participant W as 钱包与链
+participant T as 隧道<br>WS + 两跳 postMessage
+participant S as MCP server<br>document.modelContext
+participant H as wallet_transfer handler
+participant P as 钱包与链
 
-U->>C: 转 0.1 PROS 给 0xabc…
-C->>M: prompt + ToolSet，工具表来自 useMcpClient
+U->>W: 转 0.1 PROS 给 0xabc…
+W->>A: POST /api/chat
+A->>M: prompt + ToolSet，工具表来自隧道那头
 activate M
-M-->>C: tool call · wallet_transfer token/to/amount
+M-->>A: tool call · wallet_transfer
 deactivate M
-C->>T: ToolSet.execute → client.callTool
-T->>S: postMessage · channelId = webmcp-wallet-demo
+A->>T: client.callTool（timeout 10 分钟）
+T->>S: 原样 JSON-RPC，穿过 WS 与两跳 postMessage
 S->>H: 调用 handler
 activate H
 H->>H: 闸门 1 · validateTransfer，与手动表单共用同一份校验
 rect rgba(128, 128, 255, 0.3)
-Note over U,W: 两道人工闸门 —— 模型无法跳过
-H->>U: 闸门 2 · 弹出确认框，展示金额 / 地址全文 / 余额
+Note over U,P: 两道人工闸门 —— 六跳之后一道没少，且都在宿主页面
+H->>U: 闸门 2 · 宿主页面弹出确认框，展示金额 / 地址全文 / 余额
 U-->>H: 点击确认（点取消 → status declined）
-H->>W: 闸门 3 · 发起交易，请求钱包签名
-U-->>W: 在钱包里签名（拒签 → status rejected）
+H->>P: 闸门 3 · 发起交易，请求钱包签名
+U-->>P: 在钱包里签名（拒签 → status rejected）
 end
-W-->>H: tx.hash（只等交易发出，不等上链确认）
-H->>H: refreshBalances，页面卡片同步刷新
-H-->>S: status submitted + txHash + explorerUrl + message
+P-->>H: tx.hash
+H-->>S: status submitted + txHash + explorerUrl
 deactivate H
-S-->>T: postMessage 回灌结果
-T-->>C: tool result
-C->>M: 结果回灌，同一轮继续（stopWhen stepCountIs 5）
+S-->>T: 结果原路回灌
+T-->>A: tool result
+A->>M: 回灌模型，同一轮继续（stopWhen stepCountIs 5）
 activate M
-M-->>C: 用自然语言转述 status 与 txHash
+M-->>A: 用自然语言转述
 deactivate M
-C-->>U: 回复
+A-->>W: SSE delta
+W-->>U: 回复
 ```
 
 只读的 `wallet_get_balances` 是同一条链路去掉中间那个高亮区——没有人工闸门，handler 同步返回页面已有的 state。
@@ -314,12 +241,41 @@ C-->>U: 回复
 
 ## 4. 接到你自己的页面
 
-1. 复制 `index.html` 的内联脚本，把 `channelId` 改成你自己的名字（必须在 `@mcp-b/global` 被 import 之前执行）。
-2. 复制 `src/mcp/mcpClient.ts`，`MCP_CHANNEL_ID` 与上一步**完全一致**；若有需要用户交互的慢工具，把 `requestTimeout` 放大。
-3. 参照 `src/mcp/useWalletWebMcpTools.ts` 写自己的 `useXxxWebMcpTools`，用 `useWebMCP()` 包装页面**已有**的能力，`deps` 写全。
-4. `<McpClientProvider>` 包在需要工具的组件外层，然后把 chat widget（`<ChatLauncher/>` + `<ChatDrawer/>`，或你自己的 UI）挂进页面。
+1. **页面侧**：复制 `index.html` 的内联脚本（`channelId` 改成你自己的），照 `src/mcp/useWalletWebMcpTools.ts` 用 `useWebMCP()` 包装页面**已有**的能力，`deps` 写全。
+2. **嵌 widget**：复制 `src/mcp/tunnelEnvelope.ts` 与 `src/mcp/hostTunnel.ts`，照 `src/components/AgentWidget.tsx` 挂 iframe 并启动转发器。`widgetOrigin` 填 agent 服务商给你的 origin。
+3. **widget 侧**（如果 widget 也是你自己的）：复制 `widget/tunnel.ts`，连上 WS 之后立刻装转发器。
+4. **服务器侧**：复制 `server/WebSocketTunnelClientTransport.ts` 与 `server/sessions.ts`，每个 WS 连接建一个 `Client`，`callTool` 记得传够长的 `timeout`。
 
-## 5. 两条必须知道的安全边界
+## 5. 三条必须知道的安全边界
 
-1. **工具对同 tab 的浏览器扩展可见，做不到"只对页内 chat 开放"**。工具注册在 `document.modelContext` 上并通过 tab transport 广播，同 tab 内任何连上这个 channel 的 MCP 客户端（包括 MCP-B 扩展）都能 list/call。缓解手段就是 `allowedOrigins` 限制到本 origin + 写操作强制人工闸门。要严格隔离就得放弃 mcp-b、自己实现内存工具注册表——本 demo 不做。
-2. **`VITE_LLM_API_KEY` 会被打进前端产物**，任何人可从 bundle 提取。仅限本地 / 内网 demo；生产必须改后端代理。
+1. **工具对同 tab 的其它 MCP 客户端可见，做不到"只对这个 agent 开放"**。工具注册在 `document.modelContext` 上并通过 tab transport 广播，同 tab 内任何连上这个 channel 的客户端（包括 MCP-B 浏览器扩展）都能 list/call。缓解手段是 `allowedOrigins` 限制到本 origin + 写操作强制人工闸门。要严格隔离就得放弃 mcp-b、自己实现内存工具注册表——本 demo 不做。
+
+2. **跨 origin 的 postMessage 靠双向 origin 校验，这是隧道唯一的来源保证**。宿主侧只接受 `event.origin === WIDGET_ORIGIN` 且 `event.source === iframe.contentWindow` 的消息；widget 侧只接受 `event.origin === HOST_ORIGIN` 的消息。任何一侧写成 `'*'` 都会让页面上任意脚本能往隧道里灌 JSON-RPC。
+
+3. **本实验没有做 WebSocket 鉴权，云端部署前必须补上**。现在服务器绑 `127.0.0.1`，WS 层只校验 `Origin` 头——这挡得住浏览器里的跨站请求，挡不住任何非浏览器客户端。云端部署必须改成：宿主页面向你的后端换取一个短期会话令牌，widget 建立 WS 时带上，服务器验签后才建 session。否则任何人都能连上你的 relay 并驱动别人页面上的工具。
+
+## 6. 为什么不用 MCP-B 现成的方案
+
+MCP-B（[WebMCP-org/npm-packages](https://github.com/WebMCP-org/npm-packages)）已经有 iframe transport 和一个 relay，但都不适配这个场景。
+
+1. **`IframeParentTransport` / `IframeChildTransport` 方向是反的**。MCP-B 设想的 iframe 场景是「iframe 提供工具、宿主消费」（`<mcp-iframe>` 自定义元素就是把子页面的工具加前缀挂到父页面上）。我们要的是反过来：宿主提供工具、iframe 消费。
+
+2. **`@mcp-b/global` 的 transport 选择写死了**。`createTransport()` 里 `window.parent !== window` 就用 iframe transport、否则用 tab transport，二选一；而且内部的 server 实例是模块级私有的，SDK 的 `Server` 一个实例又只能 connect 一个 transport。想让宿主页面「再挂一个面向 iframe 的 server transport」，绕不开 fork。
+
+3. **`webmcp-local-relay` 形状对但代价不对**。它的架构确实是「页面 → 隐藏 iframe → WebSocket → 服务器 MCP」，但面向 localhost + stdio（端口扫描发现、server/client 双模式），而且**不传 MCP 协议**——它用一套自定义信封（`hello` / `tools/list` / `invoke` / `result`）在服务器端**重建**一个 MCP server，代价是丢掉通知、progress、`tools/list_changed` 这些原生语义，还要维护两套 schema。而云端真正需要的会话鉴权，它反而没有。
+
+4. **所以我们打隧道，不重建**。MCP 的 `Transport` 接口只有 6 个成员（`start` / `send` / `close` + 三个回调），所以两端哑转发原样的 JSON-RPC、服务器端自写一个 transport 交给官方 `Client` 就够了——约 180 行新代码，协议保真度反而比方案 3 更高。
+
+完整的调研与取舍见 `docs/superpowers/specs/2026-08-27-webmcp-server-agent-tunnel-design.md`。
+
+---
+
+## 已验证 / 待验证
+
+**代码级已验证**：`pnpm test` 跑 57 个测试、覆盖 8 个文件，其中 `server/tunnel.integration.test.ts` 用真实的转发器函数拼出完整三跳链路（并做过故障注入，证明这个测试确实能测出坏情况，不是摆设）；`pnpm exec tsc -b` 与 `pnpm build` 均通过；服务器可以正常启动，`GET http://localhost:8787/widget` 返回 200；SSE 事件契约在 `server/index.ts`（发送端）与 `widget/sseChatAdapter.ts`（接收端）两侧手动核对过一致。
+
+**还没有跑过的是完整浏览器链路**——本仓库这次没有条件起浏览器、连钱包、配 LLM key 去实际跑一遍。按上面的 quickstart 起完 `pnpm dev` 之后，建议自己确认这三件事：
+
+1. 打开 `http://localhost:5273`，服务器进程的终端日志应该打印出 `session ... 就绪，页面提供 2 个工具：wallet_get_balances, wallet_transfer`（`server/index.ts` 里 `registry.create(...).then(...)` 那行）。
+2. 在右下角的 widget 里问 agent 余额，应该能拿到与页面卡片一致的数字。
+3. 发起一笔小额转账：**确认弹窗必须出现在宿主页面（`localhost:5273`）上，而不是 iframe 里**——这是「两道人工闸门都在宿主页面」这条设计的可观察验证点。
