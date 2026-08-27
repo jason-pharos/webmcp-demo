@@ -1,2 +1,3 @@
-export { ChatLauncher } from './ChatLauncher';
-export { ChatDrawer } from './ChatDrawer';
+export { Thread } from './Thread';
+export { Composer } from './Composer';
+export { SamplePrompts } from './SamplePrompts';
