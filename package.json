@@ -4,9 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -n host,server -c cyan,magenta \"vite\" \"pnpm dev:server\"",
+    "dev:host": "vite",
+    "dev:server": "tsx --env-file=.env server/index.ts",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.31",
@@ -19,14 +23,19 @@
     "ethers6": "npm:ethers@^6.16.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "styled-components": "^6.1.19"
+    "styled-components": "^6.1.19",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.4",
+    "tsx": "^4.23.12",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^3.2.7"
   }
 }

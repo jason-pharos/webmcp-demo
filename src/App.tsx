@@ -1,5 +1,4 @@
 import styled from 'styled-components';
-import { McpClientProvider } from '@mcp-b/react-webmcp';
 import { WalletProvider } from '@/wallet/WalletProvider';
 import { useWallet } from '@/wallet/useWallet';
 import { ConnectButton } from '@/components/ConnectButton';
@@ -9,10 +8,9 @@ import { useTransfer } from '@/chain/useTransfer';
 import { useTransferConfirm } from '@/chain/useTransferConfirm';
 import { TransferForm } from '@/components/TransferForm';
 import { TransferConfirmDialog } from '@/components/TransferConfirmDialog';
-import { getMcpClient, getMcpTransport } from '@/mcp/mcpClient';
 import { useWalletWebMcpTools } from '@/mcp/useWalletWebMcpTools';
 import { McpStatus } from '@/components/McpStatus';
-import { ChatLauncher } from '@/components/aiChat';
+import { AgentWidget } from '@/components/AgentWidget';
 
 const Main = styled.main`
   max-width: 880px;
@@ -57,10 +55,11 @@ function Page() {
     <Main>
       <Title>WebMCP Wallet Demo</Title>
       <Description>
-        这是一个 WebMCP 能力暴露示例：宿主页面把余额查询与转账能力通过 WebMCP 暴露给页内 AI
-        agent。跑法 / 工具契约 / 安全边界见项目根目录的 README.md。
+        这是一个 WebMCP 能力暴露示例：宿主页面把余额查询与转账能力通过 WebMCP 暴露给
+        <strong>跑在服务器端</strong>的 AI agent —— 中间经由右下角那个跨 origin 的 widget
+        iframe 打隧道。跑法 / 工具契约 / 安全边界见项目根目录的 README.md。
       </Description>
-      <McpStatus />
+      <McpStatus toolNames={['wallet_get_balances', 'wallet_transfer']} />
       <ConnectButton />
       <BalanceCards balances={balances} />
       <TransferForm
@@ -70,7 +69,7 @@ function Page() {
         lastError={transfer.lastError}
       />
       <TransferConfirmDialog confirm={confirm} />
-      <ChatLauncher />
+      <AgentWidget />
     </Main>
   );
 }
@@ -78,9 +77,7 @@ function Page() {
 function App() {
   return (
     <WalletProvider>
-      <McpClientProvider client={getMcpClient()} transport={getMcpTransport()} opts={{}}>
-        <Page />
-      </McpClientProvider>
+      <Page />
     </WalletProvider>
   );
 }

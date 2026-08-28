@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.server.tsbuildinfo",
+    "target": "ES2023",
+    // tunnel.integration.test.ts 故意直接 import 浏览器侧的 src/mcp/hostTunnel.ts
+    // 与 widget/tunnel.ts，用来验证三跳真的能对上话；TS 的 project 构建会顺着
+    // import 把这两个文件也编进本 program，所以这里必须能给它们找到 DOM 类型
+    // 和 @/* 别名，即便本项目其余部分都是纯 Node 代码。
+    // 代价：这条 lib 声明对本目录里真正的 Node-only 代码同样生效，所以一处
+    // 误写的 document/window 不会在这里被类型检查挡下来——只能靠代码审查和
+    // 运行时（这些文件从不在浏览器里跑）来兜底。
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "baseUrl": "..",
+    "paths": { "@/*": ["src/*"] }
+  },
+  "include": ["**/*.ts"]
+}

@@ -1,7 +1,7 @@
 /**
  * 集中读取 VITE_ 环境变量，给出默认值。
  *
- * ⚠️ 所有 VITE_ 变量都会打进前端产物；LLM_API_KEY 尤其敏感，仅限本地 / 内网 demo 使用。
+ * 这里只剩链相关配置，LLM 相关配置已移到服务器端（不带 VITE_ 前缀，见 server/chat.ts）。
  */
 
 const num = (raw: string | undefined, fallback: number): number => {
@@ -16,10 +16,6 @@ export const EXPLORER_URL = import.meta.env.VITE_EXPLORER_URL || 'https://www.ph
 export const USDC_ADDRESS =
   import.meta.env.VITE_USDC_ADDRESS || '0xC879C018dB60520F4355C26eD1a6D572cdAC1815';
 export const USDC_DECIMALS = num(import.meta.env.VITE_USDC_DECIMALS, 6);
-
-export const LLM_BASE_URL = import.meta.env.VITE_LLM_BASE_URL || 'https://api.deepseek.com/v1';
-export const LLM_MODEL = import.meta.env.VITE_LLM_MODEL || 'deepseek-chat';
-export const LLM_API_KEY = import.meta.env.VITE_LLM_API_KEY || '';
 
 /** 交易详情页链接。EXPLORER_URL 可能带或不带结尾斜杠，这里统一处理。 */
 export const txUrl = (hash: string): string =>

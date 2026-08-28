@@ -16,5 +16,5 @@
     "paths": { "@/*": ["src/*"] },
     "strict": true
   },
-  "include": ["src"]
+  "include": ["src", "widget"]
 }

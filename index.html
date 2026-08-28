@@ -12,11 +12,11 @@
       // 自动初始化 WebMCP runtime（模块顶层副作用），这一步发生在 main.tsx 自己那次显式
       // initializeWebModelContext(...) 之前（ESM import 先于同模块后续代码执行）。
       // initializeWebModelContext 内部有 `if (runtime) return`，谁先跑谁生效 —— 不在这里
-      // 提前把 channelId 设进去，server 端会被钉死在默认的 'mcp-default' 通道上，而 client
-      // 端（src/mcp/mcpClient.ts 的 TabClientTransport）在 'webmcp-wallet-demo' 上，两边永远
-      // 连不上，只会在超时后收到 MCP -32001。
+      // 提前把 channelId 设进去，server 端会被钉死在默认的 'mcp-default' 通道上，而隧道
+      // 那头（src/mcp/hostTunnel.ts 的 TabClientTransport）在 'webmcp-wallet-demo' 上，两边
+      // 永远连不上，只会在超时后收到 MCP -32001。
       //
-      // channelId 必须与 src/mcp/mcpClient.ts 里的 MCP_CHANNEL_ID 完全一致，改一处要同步改另一处。
+      // channelId 必须与 src/mcp/tunnelEnvelope.ts 里的 TAB_CHANNEL_ID 完全一致，改一处要同步改另一处。
       window.__webModelContextOptions = {
         transport: {
           tabServer: {
