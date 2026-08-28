@@ -60,8 +60,11 @@ const Frame = styled.iframe<{ $open: boolean }>`
   position: fixed;
   top: 0;
   right: 0;
-  bottom: 0;
   width: 400px;
+  /* 显式给满视口高度，而不是靠 top+bottom 拉伸：iframe 是替换元素，
+     一旦 top/bottom 的撑开没生效就会回落到默认的 150px，看起来只有一小截 */
+  height: 100vh;
+  height: 100dvh;
   border: none;
   box-shadow: -8px 0 32px rgba(0, 0, 0, 0.12);
   z-index: 9700;

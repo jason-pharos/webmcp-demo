@@ -2,6 +2,15 @@
   box-sizing: border-box;
 }
 
+/* 全高度链：html → body → #root。widget iframe 里也需要这一条，才能让
+   WidgetChat 的 Panel 用 height: 100% 拿到确定高度，进而让消息区（flex: 1 +
+   overflow-y: auto）在内容溢出时垂直滚动，而不是把整页撑高。 */
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: #f6f7f9;

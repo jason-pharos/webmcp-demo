@@ -50,8 +50,10 @@ export function WidgetChat({ sessionId }: { sessionId: string | null }) {
 }
 
 const Panel = styled.div`
-  position: fixed;
-  inset: 0;
+  /* 用 height: 100% 而非 position: fixed：widget 整个页面就是这块面板，
+     不需要脱离文档流。height: 100% 依赖 html/body/#root 的 100% 链（见
+     index.css），给出确定高度后，下面的 Thread 才能在内容溢出时垂直滚动。 */
+  height: 100%;
   display: flex;
   flex-direction: column;
   background: ${({ theme }) => theme.colors.surface};
