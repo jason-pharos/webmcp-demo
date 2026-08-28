@@ -27,11 +27,23 @@ const HOST_ORIGIN = 'http://localhost:5273';
 const registry = new SessionRegistry();
 
 const vite = await createViteServer({
+  // 不读 vite.config.ts：那份配置是给宿主页面（5273）用的，里面也有一个
+  // react() 插件。默认情况下 createViteServer 会加载根目录的 vite.config.ts
+  // 并把它的 plugins 与这里内联的 plugins 拼接起来 —— 两个 react 插件会对
+  // 同一个模块注入两次 react-refresh 引导代码，直接报 "inWebWorker /
+  // $RefreshReg$ / $RefreshSig$ has already been declared"。这里要的是独立、
+  // 自包含的 widget dev server，所以关掉 config 文件加载。
+  configFile: false,
   root: ROOT,
   server: { middlewareMode: true },
   appType: 'custom',
   plugins: [react()],
   resolve: { alias: [{ find: '@', replacement: path.resolve(ROOT, 'src') }] },
+  // 依赖预扫描只扫 widget 这一个入口。否则 vite 会扫遍整个仓库根目录下的所有
+  // .html（包括 references/npm-packages-main 里那份 MCP-B v5 monorepo 的
+  // 一堆示例页面），它们 import 的是 v5 的 @mcp-b/*，本仓库只装了 v4，扫描
+  // 会失败并刷一屏报错。
+  optimizeDeps: { entries: ['widget/index.html'] },
   // widget 页面要知道宿主 origin 才能做 postMessage 校验
   define: { __HOST_ORIGIN__: JSON.stringify(HOST_ORIGIN) },
 });
